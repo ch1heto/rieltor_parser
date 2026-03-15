@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import random
 import re
@@ -1021,12 +1022,22 @@ async def choose_targets_via_ui(headless: bool) -> List[str]:
         return names
 
 
-def choose_mode(region_names: List[str]) -> Tuple[str, List[str]]:
+def choose_mode(region_names: List[str], cli_from: int = 0, cli_to: int = 0) -> Tuple[str, List[str]]:
+    # --- Режим CLI: --from N [--to M] ---
+    if cli_from > 0:
+        start_idx = max(1, cli_from)
+        end_idx   = cli_to if cli_to > 0 else len(region_names)
+        end_idx   = min(end_idx, len(region_names))
+        selected  = region_names[start_idx - 1 : end_idx]
+        mode_name = f"С {start_idx} по {end_idx} регион"
+        return mode_name, selected
+
     print("\n" + "=" * 58)
     print("  Выберите режим:")
     print("=" * 58)
     print("  [0]  Все регионы")
     print("  [1]  Один регион")
+    print("  [2]  Диапазон регионов (с N-го по M-й)")
     print("=" * 58)
 
     while True:
@@ -1044,6 +1055,20 @@ def choose_mode(region_names: List[str]) -> Tuple[str, List[str]]:
                     if 1 <= idx <= len(region_names):
                         return region_names[idx - 1], [region_names[idx - 1]]
                 print("  Неверный выбор.")
+        if choice == "2":
+            print("\n  Доступные регионы:")
+            for i, name in enumerate(region_names, 1):
+                print(f"  [{i:>3}] {name}")
+            while True:
+                raw_from = input(f"\n  С какого номера (1–{len(region_names)}): ").strip()
+                raw_to   = input(f"  По какой номер   (1–{len(region_names)}, Enter = до конца): ").strip()
+                if raw_from.isdigit():
+                    f = int(raw_from)
+                    t = int(raw_to) if raw_to.isdigit() else len(region_names)
+                    if 1 <= f <= t <= len(region_names):
+                        selected = region_names[f - 1 : t]
+                        return f"С {f} по {t} регион", selected
+                print("  Неверный диапазон.")
         print("  Неверный выбор.")
 
 
@@ -1287,6 +1312,22 @@ async def collect_all_regions_cards(selected_regions: List[str], headless: bool)
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Парсер риелторов ЦИАН")
+    parser.add_argument(
+        "--from", dest="from_region", type=int, default=0,
+        metavar="N",
+        help="Номер региона, с которого начинать (1-based). "
+             "При задании этого флага интерактивные паузы отключаются.",
+    )
+    parser.add_argument(
+        "--to", dest="to_region", type=int, default=0,
+        metavar="M",
+        help="Номер региона, которым заканчивать (включительно). "
+             "По умолчанию — последний регион.",
+    )
+    args = parser.parse_args()
+    auto_mode = args.from_region > 0  # True => без input()-пауз
+
     print("=" * 60)
     print("  Парсер риелторов ЦИАН  |  v11.0")
     print("=" * 60)
@@ -1294,7 +1335,8 @@ def main():
     if not STEALTH_AVAILABLE:
         print("\n  ⚠️  playwright-stealth не установлен")
         print("  Установите: pip install playwright-stealth")
-        input("\n  Нажмите Enter для продолжения...\n")
+        if not auto_mode:
+            input("\n  Нажмите Enter для продолжения...\n")
     else:
         print("\n  ✅ playwright-stealth активен\n")
 
@@ -1303,10 +1345,11 @@ def main():
 
     if not region_names:
         print("\n  ⚠️  Не удалось получить список регионов.")
-        input("\nНажмите Enter для выхода...")
+        if not auto_mode:
+            input("\nНажмите Enter для выхода...")
         return
 
-    mode_name, selected_regions = choose_mode(region_names)
+    mode_name, selected_regions = choose_mode(region_names, args.from_region, args.to_region)
 
     print(f"\n  Режим         : {mode_name}")
     print(f"  Регионов      : {len(selected_regions)}")
@@ -1314,7 +1357,10 @@ def main():
     print(f"  Страниц       : {'все' if not MAX_PAGES else MAX_PAGES}")
     print(f"  Автосейв      : каждые {AUTOSAVE_EVERY} профилей")
     print("=" * 60)
-    input("\n  Нажмите Enter для старта...\n")
+    if not auto_mode:
+        input("\n  Нажмите Enter для старта...\n")
+    else:
+        print("\n  Авторежим: старт без ожидания ввода\n")
 
     start = time.time()
     all_results: List[Dict] = []
@@ -1374,7 +1420,8 @@ def main():
         else:
             print("\n⚠️  Данные не собраны. Проверьте cian_parser.log")
 
-    input("\nНажмите Enter для выхода...")
+    if not auto_mode:
+        input("\nНажмите Enter для выхода...")
 
 
 if __name__ == "__main__":
