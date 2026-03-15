@@ -1282,31 +1282,37 @@ async def collect_cards_parallel(region_name: str, region_id: int, region_domain
 
 
 async def collect_all_regions_cards(selected_regions: List[str], headless: bool) -> Dict[str, List[Dict]]:
+    """Собирает каталог одного региона за раз — не держит все регионы в памяти."""
     from playwright.async_api import async_playwright
 
     result: Dict[str, List[Dict]] = {}
 
-    async with async_playwright() as pw:
-        browser, ctx = await make_browser_context(pw, headless)
-        page = await new_stealth_page(ctx)
+    for i, region_name in enumerate(selected_regions, 1):
+        log.info(f"=== Каталог {i}/{len(selected_regions)}: {region_name} ===")
+        async with async_playwright() as pw:
+            browser, ctx = await make_browser_context(pw, headless)
+            page = await new_stealth_page(ctx)
 
-        ok = await ensure_catalog_open(page)
-        if not ok:
-            await browser.close()
-            return result
+            ok = await ensure_catalog_open(page)
+            if not ok:
+                log.warning(f"{region_name} | не удалось открыть каталог, пропускаю")
+                await browser.close()
+                result[region_name] = []
+                continue
 
-        for i, region_name in enumerate(selected_regions, 1):
-            log.info(f"=== Регион {i}/{len(selected_regions)}: {region_name} ===")
             cards, region_id = await collect_cards_for_region(page, region_name)
-            if cards:
-                log.info(f"{region_name} | regionId={region_id} | собрано карточек: {len(cards)}")
-            else:
-                log.warning(f"{region_name} | regionId={region_id} | карточки не собраны")
-            result[region_name] = cards
-            if i < len(selected_regions):
-                await page.wait_for_timeout(int(random.uniform(*REGION_PAUSE) * 1000))
+            await browser.close()
 
-        await browser.close()
+        if cards:
+            log.info(f"{region_name} | regionId={region_id} | собрано карточек: {len(cards)}")
+        else:
+            log.warning(f"{region_name} | regionId={region_id} | карточки не собраны")
+        result[region_name] = cards
+
+        if i < len(selected_regions):
+            pause = random.uniform(*REGION_PAUSE)
+            log.info(f"Пауза перед следующим регионом: {pause:.1f} сек.")
+            await asyncio.sleep(pause)
 
     return result
 
@@ -1365,45 +1371,61 @@ def main():
     start = time.time()
     all_results: List[Dict] = []
 
-    try:
-        region_cards_map = asyncio.run(collect_all_regions_cards(selected_regions, HEADLESS))
+    async def run_one_region(region_name: str, idx_region: int) -> List[Dict]:
+        """Каталог + профили одного региона за один проход."""
+        print(f"\n▶ Регион {idx_region}/{len(selected_regions)}: {region_name}")
 
+        from playwright.async_api import async_playwright
+        async with async_playwright() as pw:
+            browser, ctx = await make_browser_context(pw, HEADLESS)
+            page = await new_stealth_page(ctx)
+            ok = await ensure_catalog_open(page)
+            if not ok:
+                print(f"  ⚠️  Не удалось открыть каталог для {region_name}")
+                await browser.close()
+                return []
+            cards, region_id = await collect_cards_for_region(page, region_name)
+            await browser.close()
+
+        if not cards:
+            print(f"  ⚠️  Карточки не найдены. Проверьте cian_parser.log")
+            return []
+
+        if MAX_AGENTS and len(cards) > MAX_AGENTS:
+            cards = cards[:MAX_AGENTS]
+
+        tag = sanitize_tag(region_name)
+        lf = OUTPUT_DIR / f"profile_links_{tag}.txt"
+        lf.write_text("\n".join([c["profile_url"] for c in cards if c.get("profile_url")]), encoding="utf-8")
+        log.info(f"Ссылки сохранены: {lf.name} ({len(cards)} шт.)")
+
+        print(f"  Карточек каталога: {len(cards)}")
+        print(f"  Шаг 2/2: парсинг {len(cards)} профилей ({PARALLEL_TABS} вкладок)...")
+        results = await enrich_profiles(cards, region_name, HEADLESS)
+
+        if results:
+            out = save_to_excel(results, region_name, progress=False)
+            print(f"  ✅ {region_name}: {len(results)} строк → {out.name}")
+        else:
+            print(f"  ⚠️  {region_name}: данные профилей не собраны.")
+
+        return results
+
+    async def run_all():
         for idx_region, region_name in enumerate(selected_regions, 1):
-            tag = sanitize_tag(region_name)
-            cards = region_cards_map.get(region_name, [])
-
-            print(f"\n▶ Регион {idx_region}/{len(selected_regions)}: {region_name}")
-            print(f"  Карточек: {len(cards)}")
-
-            if not cards:
-                print(f"  ⚠️  Карточки не найдены. Проверьте cian_parser.log")
-                if idx_region < len(selected_regions):
-                    pause = random.uniform(*REGION_PAUSE)
-                    print(f"  Пауза перед следующим регионом: {pause:.1f} сек.")
-                    time.sleep(pause)
-                continue
-
-            if MAX_AGENTS and len(cards) > MAX_AGENTS:
-                cards = cards[:MAX_AGENTS]
-
-            lf = OUTPUT_DIR / f"profile_links_{tag}.txt"
-            lf.write_text("\n".join([c["profile_url"] for c in cards if c.get("profile_url")]), encoding="utf-8")
-            log.info(f"Ссылки сохранены: {lf.name} ({len(cards)} шт.)")
-
-            print(f"▶ Шаг 2/2: парсинг профилей {len(cards)} ({PARALLEL_TABS} вкладок)...")
-            results = asyncio.run(enrich_profiles(cards, region_name, HEADLESS))
-
-            if results:
-                out = save_to_excel(results, region_name, progress=False)
-                print(f"  ✅ Регион {region_name}: {len(results)} строк. Файл: {out}")
+            try:
+                results = await run_one_region(region_name, idx_region)
                 all_results.extend(results)
-            else:
-                print(f"  ⚠️  Регион {region_name}: данные не собраны.")
+            except Exception as e:
+                log.error(f"[{region_name}] критическая ошибка: {e}")
 
             if idx_region < len(selected_regions):
                 pause = random.uniform(*REGION_PAUSE)
                 print(f"  Пауза перед следующим регионом: {pause:.1f} сек.")
-                time.sleep(pause)
+                await asyncio.sleep(pause)
+
+    try:
+        asyncio.run(run_all())
 
     except KeyboardInterrupt:
         print("\n⛔ Остановлено (Ctrl+C). Сохраняю собранное...")
