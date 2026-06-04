@@ -1,0 +1,43 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Logs
+*.log
+cian_agencies_debug_*.txt
+run_forever.log
+service.log
+service_error.log
+
+# Excel / output files
+*.xlsx
+*.xls
+*.csv
+
+# Parser output folders
+excel*/
+*excel*/
+
+# Debug files
+debug_agencies_page.html
+debug_agencies_page.png
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.bak
+*.old
